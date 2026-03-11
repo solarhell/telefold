@@ -1,0 +1,8 @@
+{
+  "llm": {
+    // 支持任何 OpenAI 兼容 API，修改 base_url 即可切换（如 Deepseek、Groq、Together 等）
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-xxx",
+    "model": "gpt-4o"
+  }
+}
