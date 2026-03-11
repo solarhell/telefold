@@ -13,7 +13,8 @@ LLM 驱动的 Telegram 分组自动整理工具。抓取所有对话信息，调
 ## 安装
 
 ```bash
-# 需要 Python >= 3.12
+git clone https://github.com/solarhell/telefold.git
+cd telefold
 uv sync
 ```
 
