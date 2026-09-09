@@ -2658,7 +2658,7 @@ dependencies = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "json5", specifier = ">=0.10" },
-    { name = "pydantic-ai", specifier = ">=0.2" },
+    { name = "pydantic-ai", specifier = ">=1.106.0" },
     { name = "telethon", specifier = ">=1.38" },
     { name = "typer", specifier = ">=0.15" },
 ]
