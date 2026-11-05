@@ -32,29 +32,16 @@ def test_resolver_entry_points_are_blocked(name, args):
 
 
 def test_standard_socketpair_remains_local_and_usable():
-    """事件循环的本地成对 socket 能通信并保持类型身份，不能因此创建其他 IP socket。"""
+    """Linux 和 macOS 事件循环所需的 Unix socketpair 保持可用。"""
     left, right = socket.socketpair()
     try:
+        assert left.family == right.family == socket.AF_UNIX
         assert isinstance(left, socket.socket)
         assert isinstance(right, socket.socket)
         left.settimeout(1)
         right.settimeout(1)
         left.sendall(b"wake")
         assert right.recv(4) == b"wake"
-        if left.family in (socket.AF_INET, socket.AF_INET6):
-            assert left.getpeername()[0] in {"127.0.0.1", "::1"}
-        with pytest.warns(UserWarning), pytest.raises(SocketBlockedError):
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM):
-                pass
     finally:
         left.close()
         right.close()
-
-
-def test_failed_socketpair_does_not_leave_network_access_open():
-    """标准库调用参数错误时，临时创建窗口也必须恢复为禁止 IP socket。"""
-    with pytest.raises(TypeError):
-        socket.socketpair(invalid_argument=True)
-    with pytest.warns(UserWarning), pytest.raises(SocketBlockedError):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM):
-            pass

@@ -21,7 +21,7 @@ source .venv/bin/activate
 
 ## 配置
 
-需要 Python 3.12+ 和 uv。运行时使用 Pydantic AI v2 的 OpenAI 精简依赖。
+支持 Linux 和 macOS，需要 Python 3.12+ 和 uv。运行时使用 Pydantic AI v2 的 OpenAI 精简依赖。
 
 复制 `config.example.jsonc` 为 `config.jsonc` 并填入 LLM 配置：
 
@@ -108,6 +108,6 @@ uv run --locked pytest -q
 uv build
 ```
 
-测试由 pytest-socket 禁止创建 IPv4/IPv6 网络 socket，并拦截各类 DNS 解析；仅允许本地 Unix socket 和标准库 socketpair 内部为 Windows 事件循环创建的回环 TCP socket。使用 Telegram mock 和本地 HTTP transport 验证删除/置顶/分组保护、异常清理及真实 Pydantic AI/OpenAI SDK 的分类协议。CI 在 Linux Python 3.12–3.15，以及 Windows Python 3.12/3.15 上执行相同检查，不需要 Telegram 会话或 API 密钥。
+测试由 pytest-socket 禁止创建 IPv4/IPv6 网络 socket，并拦截各类 DNS 解析；仅允许异步事件循环所需的本地 Unix socket。使用 Telegram mock 和本地 HTTP transport 验证删除/置顶/分组保护、异常清理及真实 Pydantic AI/OpenAI SDK 的分类协议。CI 在 Linux 和 macOS 的 Python 3.12–3.15 上执行相同检查，不需要 Telegram 会话或 API 密钥。
 
 Dependabot 每周检查 uv 和 GitHub Actions 更新；次版本及补丁更新分组提交，主版本升级单独审查。
