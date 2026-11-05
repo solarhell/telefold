@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 from telethon import TelegramClient, functions, types
 
+from telefold.planner import validate_folders
+
 
 @dataclass
 class DialogInfo:
@@ -39,14 +41,22 @@ async def create_client(code: str | None = None) -> TelegramClient:
         lang_code="en",
         system_lang_code="en-US",
     )
-    await client.connect()
+    try:
+        await client.connect()
+        if await client.is_user_authorized():
+            print("  复用已有会话，无需输入验证码")
+        else:
 
-    if await client.is_user_authorized():
-        print("  复用已有会话，无需输入验证码")
-    else:
-        code_cb = (lambda: code) if code else lambda: input("请输入验证码（来自 Telegram 官方账号）: ")
-        password_cb = lambda: input("请输入两步验证密码: ")
-        await client.start(phone=phone, code_callback=code_cb, password=password_cb)
+            def code_cb():
+                return code or input("请输入验证码（来自 Telegram 官方账号）: ")
+
+            def password_cb():
+                return input("请输入两步验证密码: ")
+
+            await client.start(phone=phone, code_callback=code_cb, password=password_cb)
+    except BaseException:
+        await client.disconnect()
+        raise
 
     return client
 
@@ -119,7 +129,9 @@ async def fetch_dialogs(
         # 获取频道/群组的简介和成员数
         if isinstance(entity, (types.Channel,)):
             try:
-                full = await client(functions.channels.GetFullChannelRequest(channel=dlg.input_entity))
+                full = await client(
+                    functions.channels.GetFullChannelRequest(channel=dlg.input_entity)
+                )
                 info.description = full.full_chat.about or None
                 info.participants_count = full.full_chat.participants_count
             except Exception:
@@ -138,9 +150,7 @@ async def fetch_dialogs(
         if sample_count > 0:
             try:
                 messages = await client.get_messages(dlg.input_entity, limit=sample_count)
-                info.sample_messages = [
-                    m.text for m in messages if m.text
-                ]
+                info.sample_messages = [m.text for m in messages if m.text]
             except Exception:
                 info.sample_messages = []
 
@@ -167,12 +177,11 @@ async def delete_dialogs(client: TelegramClient, dialogs: list[DialogInfo]) -> N
 async def clear_folders(client: TelegramClient) -> None:
     """移除所有自定义分组。"""
     existing = await client(functions.messages.GetDialogFiltersRequest())
-    if hasattr(existing, "filters"):
-        for f in existing.filters:
-            if hasattr(f, "id") and f.id >= 2:
-                await client(functions.messages.UpdateDialogFilterRequest(id=f.id))
-                print(f"  - 已移除分组 (id={f.id})")
-                await asyncio.sleep(0.5)
+    for folder in existing.filters:
+        if isinstance(folder, (types.DialogFilter, types.DialogFilterChatlist)) and folder.id >= 2:
+            await client(functions.messages.UpdateDialogFilterRequest(id=folder.id))
+            print(f"  - 已移除分组 (id={folder.id})")
+            await asyncio.sleep(0.5)
 
 
 async def apply_folders(
@@ -181,20 +190,18 @@ async def apply_folders(
     dialogs: list[DialogInfo],
 ) -> None:
     """根据分类结果创建 Telegram 分组。"""
+    validate_folders(folders, dialogs)
+    if not folders:
+        return
     dialog_map = {d.id: d for d in dialogs}
-
-    await clear_folders(client)
-
-    next_id = 2
-    for folder in folders:
+    prepared = []
+    for next_id, folder in enumerate(folders, 2):
         include_peers = []
         for did in folder["dialog_ids"]:
-            d = dialog_map.get(did)
-            if d and d._peer:
-                include_peers.append(d._peer)
-
-        if not include_peers:
-            continue
+            d = dialog_map[did]
+            if d._peer is None:
+                raise ValueError(f"对话 {did} 缺少 Telegram peer，已取消执行。")
+            include_peers.append(d._peer)
 
         dialog_filter = types.DialogFilter(
             id=next_id,
@@ -207,12 +214,17 @@ async def apply_folders(
             exclude_peers=[],
         )
 
-        await client(functions.messages.UpdateDialogFilterRequest(
-            id=next_id,
-            filter=dialog_filter,
-        ))
+        prepared.append(dialog_filter)
 
-        print(f"  + 已创建分组: {folder['name']} ({len(include_peers)} 个对话)")
-        next_id += 1
+    # 所有参数检查和请求构造成功后，才开始删除旧分组。
+    await clear_folders(client)
+    for folder, dialog_filter in zip(folders, prepared, strict=True):
+        await client(
+            functions.messages.UpdateDialogFilterRequest(
+                id=dialog_filter.id,
+                filter=dialog_filter,
+            )
+        )
 
+        print(f"  + 已创建分组: {folder['name']} ({len(dialog_filter.include_peers)} 个对话)")
         await asyncio.sleep(1)  # 限速

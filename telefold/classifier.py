@@ -2,25 +2,25 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from telefold.config import LLMConfig
 from telefold.client import DialogInfo
+from telefold.config import LLMConfig
 
 SYSTEM_PROMPT = """你是一个 Telegram 对话分组助手。请将给定的对话智能分类到分组中。
 
 规则：
 - 创建 5-8 个分组（最多 8 个），名称简短（如"科技资讯"、"Web3"、"工作"、"Tools"）
-- 每个对话只能属于一个分组
+- 每个对话必须且只能属于一个分组，不得遗漏或编造对话 ID；分组名称不得使用 NSFW 或陌生人
 - 综合利用对话标题、描述、类型、成员数和样本消息来判断最佳分类"""
 
 
 class Folder(BaseModel):
-    name: str
-    dialog_ids: list[int]
+    name: str = Field(min_length=1)
+    dialog_ids: list[int] = Field(min_length=1)
 
 
 class ClassifyResult(BaseModel):
@@ -56,7 +56,7 @@ async def classify(
     )
     agent = Agent(
         model,
-        system_prompt=SYSTEM_PROMPT,
+        instructions=SYSTEM_PROMPT,
         output_type=ClassifyResult,
         retries=3,
     )

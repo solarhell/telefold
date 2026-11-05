@@ -7,3 +7,5 @@ config.jsonc
 .venv/
 dist/
 result*.json
+.pytest_cache/
+.ruff_cache/

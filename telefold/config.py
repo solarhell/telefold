@@ -1,6 +1,7 @@
-import json5
 from dataclasses import dataclass
 from pathlib import Path
+
+import json5
 
 
 @dataclass
