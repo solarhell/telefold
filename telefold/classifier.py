@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from telefold.client import DialogInfo
 from telefold.config import LLMConfig
-from telefold.planner import FOLDER_TITLE_MAX_LENGTH
-
-MAX_CLASSIFIED_FOLDERS = 8
+from telefold.planner import (
+    FOLDER_TITLE_MAX_LENGTH,
+    MAX_CLASSIFIED_FOLDERS,
+    classification_limits,
+    validate_classification,
+)
 
 SYSTEM_PROMPT = """你是一个 Telegram 对话分组助手。请将给定的对话智能分类到分组中。
 
@@ -65,8 +68,7 @@ async def classify(
         cfg.model,
         provider=OpenAIProvider(base_url=cfg.base_url, api_key=cfg.api_key),
     )
-    minimum = 5 if len(dialogs) >= 5 else 1
-    maximum = min(MAX_CLASSIFIED_FOLDERS, len(dialogs))
+    minimum, maximum = classification_limits(dialogs)
     instructions = (
         f"{SYSTEM_PROMPT}\n本次共 {len(dialogs)} 个对话，请创建 {minimum}-{maximum} 个分组。"
     )
@@ -76,6 +78,15 @@ async def classify(
         output_type=ClassifyResult,
         retries=3,
     )
+
+    @agent.output_validator
+    def validate_output(output: ClassifyResult) -> ClassifyResult:
+        """让模型修正不合规分类；重试耗尽时由 SDK 报错并阻止计划执行。"""
+        try:
+            validate_classification([folder.model_dump() for folder in output.folders], dialogs)
+        except ValueError as exc:
+            raise ModelRetry(str(exc)) from exc
+        return output
 
     result = await agent.run(_build_prompt(dialogs))
     return [f.model_dump() for f in result.output.folders]

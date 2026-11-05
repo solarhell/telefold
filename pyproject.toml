@@ -22,10 +22,12 @@ build-backend = "hatchling.build"
 dev = [
     "httpx2>=2.16.0,<3",
     "pytest>=9.2.0,<10",
+    "pytest-socket>=0.8.1,<0.9",
     "ruff>=0.17.3,<0.18",
 ]
 
 [tool.pytest.ini_options]
+addopts = "--disable-socket --allow-unix-socket"
 testpaths = ["tests"]
 filterwarnings = ["error"]
 

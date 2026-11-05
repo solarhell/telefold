@@ -231,3 +231,18 @@ def test_invalid_name_cancels_cleanup_and_pinning(environment, name):
     assert isinstance(result.exception, ValueError)
     assert_no_writes(env)
     env.client.disconnect.assert_awaited_once()
+
+
+def test_group_count_violation_cancels_all_writes(environment):
+    """即使对话覆盖完整，九个普通对话只有一个分组也不得进入任何写入。"""
+    env = environment
+    env.fetch.return_value = env.fetch.return_value[:2] + [
+        DialogInfo(index, "技术群", "group", _peer=f"peer-{index}") for index in range(2, 11)
+    ]
+    env.classify.return_value = [{"name": "技术", "dialog_ids": list(range(2, 11))}]
+    result = CliRunner().invoke(cli.app, ["run", "--yes"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ValueError)
+    assert "5-8" in str(result.exception)
+    assert_no_writes(env)
+    env.client.disconnect.assert_awaited_once()

@@ -7,11 +7,16 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def block_network(monkeypatch):
-    """在测试期间拦截 DNS 解析及套接字连接，避免任何真实网络请求。"""
+    """补齐所有 DNS 入口；互联网 socket 创建由 pytest-socket 统一禁用。"""
 
     def forbidden(*args, **kwargs):
         pytest.fail("测试不得连接真实 Telegram、LLM 或其他网络服务")
 
-    monkeypatch.setattr(socket.socket, "connect", forbidden)
-    monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
-    monkeypatch.setattr(socket, "getaddrinfo", forbidden)
+    for name in (
+        "getaddrinfo",
+        "gethostbyname",
+        "gethostbyname_ex",
+        "gethostbyaddr",
+        "getnameinfo",
+    ):
+        monkeypatch.setattr(socket, name, forbidden)

@@ -96,7 +96,7 @@ telefold clean
 
 `clean` 同样支持 `--dry-run`，此时不会删除任何对话，`--yes` 不会覆盖预览模式。
 
-`run --dry-run` 仍需 Telegram 登录、读取对话和 LLM 分类，因此仍可能产生 LLM 调用费用；`clean --dry-run` 不调用 LLM。计划会列出待删除对话及每个分组的成员，所有 Telegram 内容修改只在计划校验通过并得到确认后执行；拒绝确认会取消整份计划。分组名称最多 12 个字符，模型不能占用 NSFW 和陌生人的固定名称。预览中的控制字符会转义显示，避免改变计划的排版。没有待创建的分组时保留已有分组。分类、读取或执行失败时都会断开 Telegram 连接。
+`run --dry-run` 仍需 Telegram 登录、读取对话和 LLM 分类，因此仍可能产生 LLM 调用费用；`clean --dry-run` 不调用 LLM。计划会列出待删除对话及每个分组的成员，所有 Telegram 内容修改只在计划校验通过并得到确认后执行；拒绝确认会取消整份计划。分组名称最多 12 个字符，模型不能占用 NSFW 和陌生人的固定名称。模型输出的分组数量、对话覆盖和名称都会经过代码校验；不合规时最多要求模型修正 3 次，仍失败则在任何修改前停止。预览中的控制字符会转义显示，避免改变计划的排版。没有待创建的分组时保留已有分组。分类、读取或执行失败时都会断开 Telegram 连接。
 
 ## 开发与验证
 
@@ -108,6 +108,6 @@ uv run --locked pytest -q
 uv build
 ```
 
-测试禁止真实网络连接，使用 Telegram mock 和本地 HTTP transport 验证删除/置顶/分组保护、异常清理及真实 Pydantic AI/OpenAI SDK 的分类协议。CI 在 Python 3.12–3.15 上执行相同检查，不需要 Telegram 会话或 API 密钥。
+测试由 pytest-socket 禁止创建 IPv4/IPv6 网络 socket，并拦截各类 DNS 解析；仅允许异步事件循环所需的本地 Unix socket。使用 Telegram mock 和本地 HTTP transport 验证删除/置顶/分组保护、异常清理及真实 Pydantic AI/OpenAI SDK 的分类协议。CI 在 Python 3.12–3.15 上执行相同检查，不需要 Telegram 会话或 API 密钥。
 
 Dependabot 每周检查 uv 和 GitHub Actions 更新；次版本及补丁更新分组提交，主版本升级单独审查。

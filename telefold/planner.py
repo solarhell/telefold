@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 
 FOLDER_TITLE_MAX_LENGTH = 12
+MAX_CLASSIFIED_FOLDERS = 8
 RESERVED_FOLDER_NAMES = {"nsfw", "陌生人"}
 
 NSFW_KEYWORDS = [
@@ -126,12 +127,31 @@ def _is_nsfw(dialog: DialogInfo) -> bool:
     )
 
 
-def build_folders(groups: DialogGroups, classified: list[dict]) -> list[dict]:
-    """拒绝模型占用保留名称，加入固定分组并校验完整计划。"""
-    for folder in classified:
+def classification_limits(dialogs: list[DialogInfo]) -> tuple[int, int]:
+    """按待分类对话数计算可行范围；空输入不需要模型分组。"""
+    count = len(dialogs)
+    if count == 0:
+        return 0, 0
+    return (5 if count >= 5 else 1), min(MAX_CLASSIFIED_FOLDERS, count)
+
+
+def validate_classification(folders: list[dict], dialogs: list[DialogInfo]) -> None:
+    """统一校验模型分组数量、保留名称及完整且互斥的对话覆盖。"""
+    minimum, maximum = classification_limits(dialogs)
+    if not minimum <= len(folders) <= maximum:
+        raise ValueError(
+            f"分类结果必须包含 {minimum}-{maximum} 个分组，当前返回 {len(folders)} 个，已取消执行。"
+        )
+    for folder in folders:
         name = folder.get("name")
         if isinstance(name, str) and name.strip().casefold() in RESERVED_FOLDER_NAMES:
             raise ValueError(f"分类结果使用了保留分组名称：{display_text(name)}，已取消执行。")
+    validate_folders(folders, dialogs)
+
+
+def build_folders(groups: DialogGroups, classified: list[dict]) -> list[dict]:
+    """校验模型分类，再加入固定分组并检查完整执行计划。"""
+    validate_classification(classified, groups.regular)
     folders = list(classified)
     if groups.nsfw:
         folders.append({"name": "NSFW", "dialog_ids": [d.id for d in groups.nsfw]})
