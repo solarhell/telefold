@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from telethon import TelegramClient, functions, types
 
+from telefold.display import display_text
 from telefold.planner import validate_folders
 
 
@@ -28,6 +29,7 @@ class DialogInfo:
 
 
 async def create_client(code: str | None = None) -> TelegramClient:
+    """连接并复用或建立授权会话；返回前发生异常时负责断开连接。"""
     phone = input("请输入手机号（含国际区号，如 +86...）: ").strip()
     session_name = phone.replace("+", "").replace(" ", "")
 
@@ -48,6 +50,7 @@ async def create_client(code: str | None = None) -> TelegramClient:
         else:
 
             def code_cb():
+                """优先使用显式验证码，否则交互式读取本次登录验证码。"""
                 return code or input("请输入验证码（来自 Telegram 官方账号）: ")
 
             def password_cb():
@@ -113,7 +116,7 @@ async def fetch_dialogs(
         else:
             continue
 
-        print(f"\r  [{i}/{total}] {title[:30]}", end="", flush=True)
+        print(f"\r  [{i}/{total}] {display_text(title[:30])}", end="", flush=True)
 
         info = DialogInfo(
             id=dlg.id,
@@ -168,9 +171,9 @@ async def delete_dialogs(client: TelegramClient, dialogs: list[DialogInfo]) -> N
     for d in dialogs:
         try:
             await client.delete_dialog(d._peer)
-            print(f"  x 已删除: {d.title} (id={d.id})")
+            print(f"  x 已删除: {display_text(d.title)} (id={d.id})")
         except Exception as e:
-            print(f"  ! 删除失败 {d.title}: {e}")
+            print(f"  ! 删除失败 {display_text(d.title)}: {display_text(e)}")
         await asyncio.sleep(0.5)
 
 
@@ -226,5 +229,8 @@ async def apply_folders(
             )
         )
 
-        print(f"  + 已创建分组: {folder['name']} ({len(dialog_filter.include_peers)} 个对话)")
+        print(
+            f"  + 已创建分组: {display_text(folder['name'])} "
+            f"({len(dialog_filter.include_peers)} 个对话)"
+        )
         await asyncio.sleep(1)  # 限速

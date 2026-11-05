@@ -26,6 +26,10 @@ def test_login_failure_disconnects(monkeypatch, failure, stage):
 @pytest.mark.parametrize(
     "folders,dialogs",
     [
+        (
+            [{"name": "过长名称" * 4, "dialog_ids": [1]}],
+            [DialogInfo(1, "一", "group", _peer="peer")],
+        ),
         ([{"name": "技术", "dialog_ids": [999]}], [DialogInfo(1, "一", "group", _peer="peer")]),
         ([{"name": "技术", "dialog_ids": [1]}], [DialogInfo(1, "一", "group")]),
         ([], [DialogInfo(1, "一", "group", _peer="peer")]),
@@ -45,6 +49,7 @@ def test_empty_plan_does_not_delete_old_folders():
 
 
 def test_request_construction_failure_preserves_old_folders(monkeypatch):
+    """全部请求构造完成之前，任何一个无效分组都不能触发旧分组删除。"""
     constructor = Mock(side_effect=[object(), ValueError("请求无效")])
     monkeypatch.setattr(module.types, "DialogFilter", constructor)
     client = AsyncMock()
@@ -56,6 +61,7 @@ def test_request_construction_failure_preserves_old_folders(monkeypatch):
 
 
 def test_valid_folder_requests_are_applied_after_clearing(monkeypatch):
+    """核对实际 Telegram 请求类型、成员和顺序，确保完整替换计划按预期执行。"""
     client = AsyncMock()
     events = []
 

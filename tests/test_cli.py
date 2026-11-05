@@ -14,6 +14,7 @@ from telefold.config import Config, LLMConfig
 
 @pytest.fixture
 def environment(monkeypatch):
+    """提供完整的清理、置顶和分组输入，所有 Telegram 与 LLM 调用均由 mock 接管。"""
     cfg = Config(LLMConfig(api_key="测试密钥", model="测试模型"))
     monkeypatch.setattr(cli.Config, "load", Mock(return_value=cfg))
     client = AsyncMock()
@@ -50,6 +51,7 @@ def assert_no_writes(env):
 
 @pytest.mark.parametrize("yes", [False, True])
 def test_run_dry_run_never_writes(environment, yes):
+    """预览必须展示实际目标，即使同时指定 --yes 也不得执行内容写入。"""
     env = environment
     args = ["run", "--dry-run"] + (["--yes"] if yes else [])
     result = CliRunner().invoke(cli.app, args)
@@ -73,17 +75,23 @@ def test_declining_confirmation_cancels_every_write(environment):
 
 @pytest.mark.parametrize("yes", [False, True])
 def test_confirmed_run_applies_the_displayed_plan(environment, yes):
+    """交互确认和 --yes 都只能按已展示的目标及顺序执行整份计划。"""
     env = environment
     events = []
 
-    async def deleted(*args):
+    async def deleted(client, dialogs):
+        """记录清理顺序，并检查客户端及待删除对话与计划完全一致。"""
+        assert client is env.client
+        assert [dialog.id for dialog in dialogs] == [1]
         events.append("删除")
 
     async def pinned(request):
+        """只允许置顶计划中指定的官方 peer。"""
         events.append("置顶")
         assert request.peer == "official-peer" and request.pinned is True
 
     async def applied(client, folders, dialogs):
+        """只允许将计划中的普通对话写入已展示的分组。"""
         events.append("分组")
         assert folders == [{"name": "技术", "dialog_ids": [2]}]
         assert [d.id for d in dialogs] == [2]
@@ -99,6 +107,7 @@ def test_confirmed_run_applies_the_displayed_plan(environment, yes):
 
 @pytest.mark.parametrize("stage", ["get_me", "fetch", "classify", "delete", "apply"])
 def test_failure_always_disconnects(environment, stage):
+    """读取或分类失败不得写入，任何执行阶段失败也必须断开连接。"""
     env = environment
     target = env.client.get_me if stage == "get_me" else getattr(env, stage)
     target.side_effect = RuntimeError("模拟失败")
@@ -142,6 +151,7 @@ def test_cleanup_only_does_not_clear_existing_folders(environment):
 
 
 def test_types_are_filtered_before_classification(environment):
+    """类型选项允许空白，但模型输入只包含过滤后实际需要分类的对话。"""
     env = environment
     result = CliRunner().invoke(cli.app, ["run", "--dry-run", "-t", " channel , group "])
     assert result.exit_code == 0, result.output
@@ -158,6 +168,7 @@ def test_invalid_options_do_not_connect(environment, args):
 
 @pytest.mark.parametrize("yes", [False, True])
 def test_clean_dry_run_never_deletes(environment, yes):
+    """清理命令的预览优先于 --yes，并在退出时释放连接。"""
     env = environment
     args = ["clean", "--dry-run"] + (["--yes"] if yes else [])
     result = CliRunner().invoke(cli.app, args)
@@ -188,5 +199,35 @@ def test_cancellation_always_disconnects(environment):
     env.classify.side_effect = asyncio.CancelledError()
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(cli._run("config.jsonc", 5, None, False, False, None, True))
+    assert_no_writes(env)
+    env.client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.parametrize("command", [["run", "--dry-run", "--verbose"], ["clean", "--dry-run"]])
+def test_untrusted_titles_cannot_forge_preview_lines(environment, command):
+    """预览、详细输出和清理列表中的换行、ANSI、双向控制字符均显示为转义文本。"""
+    env = environment
+    env.fetch.return_value[0].title = "删除目标\n伪造计划\x1b[2J\u202e"
+    env.fetch.return_value[2].title = "技术群\r覆盖\u200d"
+    env.fetch.return_value[2].description = "简介\x1b[H"
+    env.classify.return_value = [{"name": "组\x1b[2J", "dialog_ids": [2]}]
+    result = CliRunner().invoke(cli.app, command, color=True)
+    assert result.exit_code == 0, result.output
+    assert "删除目标\\n伪造计划\\x1b[2J\\u202e" in result.output
+    assert all(character not in result.output for character in ["\x1b", "\r", "\u202e", "\u200d"])
+    if command[0] == "run":
+        assert "技术群\\r覆盖\\u200d" in result.output
+        assert "组\\x1b[2J" in result.output
+    assert_no_writes(env)
+
+
+@pytest.mark.parametrize("name", ["NSFW", "陌生人", "过长名称" * 4])
+def test_invalid_name_cancels_cleanup_and_pinning(environment, name):
+    """保留或过长名称在完整计划确认前拒绝，也不得触发删除和置顶。"""
+    env = environment
+    env.classify.return_value = [{"name": name, "dialog_ids": [2]}]
+    result = CliRunner().invoke(cli.app, ["run", "--yes"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ValueError)
     assert_no_writes(env)
     env.client.disconnect.assert_awaited_once()

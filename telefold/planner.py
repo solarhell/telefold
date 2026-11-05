@@ -5,9 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from telefold.display import display_text
+
 if TYPE_CHECKING:
     from telefold.client import DialogInfo
 
+
+FOLDER_TITLE_MAX_LENGTH = 12
+RESERVED_FOLDER_NAMES = {"nsfw", "陌生人"}
 
 NSFW_KEYWORDS = [
     "反差",
@@ -79,6 +84,8 @@ RESTRICTED_WHITELIST = [
 
 @dataclass
 class DialogGroups:
+    """按处理方式互斥分组，删除和官方对话不进入模型分类。"""
+
     to_delete: list[DialogInfo]
     official: list[DialogInfo]
     regular: list[DialogInfo]
@@ -87,10 +94,12 @@ class DialogGroups:
 
     @property
     def folder_dialogs(self) -> list[DialogInfo]:
+        """返回最终分组中应恰好出现一次的全部对话。"""
         return self.regular + self.nsfw + self.strangers
 
 
 def group_dialogs(dialogs: list[DialogInfo]) -> DialogGroups:
+    """依次处理清理、官方账号、敏感内容和陌生人，其余对话交给模型。"""
     groups = DialogGroups([], [], [], [], [])
     for dialog in dialogs:
         if dialog.dialog_type == "deleted" or dialog.scam or dialog.fake:
@@ -107,6 +116,7 @@ def group_dialogs(dialogs: list[DialogInfo]) -> DialogGroups:
 
 
 def _is_nsfw(dialog: DialogInfo) -> bool:
+    """结合受限标记和关键词判断敏感内容，保留既有标题匹配和白名单规则。"""
     title = dialog.title.lower()
     text = (dialog.title + " " + (dialog.description or "")).lower()
     return (
@@ -117,6 +127,11 @@ def _is_nsfw(dialog: DialogInfo) -> bool:
 
 
 def build_folders(groups: DialogGroups, classified: list[dict]) -> list[dict]:
+    """拒绝模型占用保留名称，加入固定分组并校验完整计划。"""
+    for folder in classified:
+        name = folder.get("name")
+        if isinstance(name, str) and name.strip().casefold() in RESERVED_FOLDER_NAMES:
+            raise ValueError(f"分类结果使用了保留分组名称：{display_text(name)}，已取消执行。")
     folders = list(classified)
     if groups.nsfw:
         folders.append({"name": "NSFW", "dialog_ids": [d.id for d in groups.nsfw]})
@@ -136,13 +151,18 @@ def validate_folders(folders: list[dict], dialogs: list[DialogInfo]) -> None:
         ids = folder.get("dialog_ids")
         if not isinstance(name, str) or not name.strip() or not isinstance(ids, list) or not ids:
             raise ValueError("分类结果包含空名称或空分组，已取消执行。")
+        if len(name) > FOLDER_TITLE_MAX_LENGTH:
+            raise ValueError(
+                f"分组名称超过 Telegram 的 {FOLDER_TITLE_MAX_LENGTH} 字符限制："
+                f"{display_text(name)}，已取消执行。"
+            )
         normalized = name.strip().casefold()
         if normalized in names:
-            raise ValueError(f"分类结果包含重复分组名称：{name}，已取消执行。")
+            raise ValueError(f"分类结果包含重复分组名称：{display_text(name)}，已取消执行。")
         names.add(normalized)
         for dialog_id in ids:
             if type(dialog_id) is not int or dialog_id not in expected:
-                raise ValueError(f"分类结果包含未知对话：{dialog_id}，已取消执行。")
+                raise ValueError(f"分类结果包含未知对话：{display_text(dialog_id)}，已取消执行。")
             if dialog_id in seen:
                 raise ValueError(f"分类结果包含重复对话：{dialog_id}，已取消执行。")
             seen.add(dialog_id)

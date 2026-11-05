@@ -7,6 +7,7 @@ from telefold.planner import build_folders, group_dialogs, validate_folders
 
 
 def test_grouping_priority_and_fixed_folders():
+    """清理与官方账号优先排除，敏感内容和陌生人进入固定分组，其余对话交给模型。"""
     dialogs = [
         DialogInfo(1, "已注销", "deleted"),
         DialogInfo(2, "可疑账号", "stranger", scam=True),
@@ -52,3 +53,20 @@ def test_invalid_plan_is_rejected(folders):
 
 def test_empty_input_preserves_existing_folders():
     assert build_folders(group_dialogs([]), []) == []
+
+
+@pytest.mark.parametrize("name", ["NSFW", "nsfw", " NsFw ", "陌生人", " 陌生人 "])
+def test_model_cannot_use_reserved_names_without_fixed_folders(name):
+    """即使本次没有对应固定分组，模型也不能借用它的名称误标普通对话。"""
+    groups = group_dialogs([DialogInfo(1, "技术群", "group")])
+    with pytest.raises(ValueError, match="保留分组名称"):
+        build_folders(groups, [{"name": name, "dialog_ids": [1]}])
+
+
+@pytest.mark.parametrize("character", ["a", "中", "😀"])
+def test_folder_title_boundary_counts_unicode_characters(character):
+    """12 个 ASCII、中文或非 BMP 字符均可使用，13 个字符在写入前拒绝。"""
+    dialogs = [DialogInfo(1, "技术群", "group")]
+    validate_folders([{"name": character * 12, "dialog_ids": [1]}], dialogs)
+    with pytest.raises(ValueError, match="12 字符限制"):
+        validate_folders([{"name": character * 13, "dialog_ids": [1]}], dialogs)

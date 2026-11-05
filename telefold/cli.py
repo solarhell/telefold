@@ -11,6 +11,7 @@ from telethon import functions
 from telefold.classifier import classify
 from telefold.client import apply_folders, create_client, delete_dialogs, fetch_dialogs
 from telefold.config import Config
+from telefold.display import display_text
 from telefold.planner import build_folders, group_dialogs
 
 app = typer.Typer(
@@ -60,6 +61,7 @@ def clean(
 
 
 def _parse_types(value: str | None) -> set[str] | None:
+    """在连接之前校验类型选项，忽略分隔符周围的空白。"""
     if value is None:
         return None
     selected = {item.strip() for item in value.split(",")}
@@ -79,21 +81,28 @@ async def _run(
     code: str | None,
     yes: bool,
 ) -> None:
+    """构造并展示完整计划；预览或拒绝确认时不执行任何内容写入。"""
     selected_types = _parse_types(types)
     cfg = Config.load(config)
     print(":: 连接 Telegram...")
     client = await create_client(code=code)
     try:
         me = await client.get_me()
-        print(f"  已登录: {me.first_name} ({me.phone})")
+        print(f"  已登录: {display_text(me.first_name)} ({display_text(me.phone)})")
         print(f":: 抓取对话 (sample_count={samples})...")
         dialogs = await fetch_dialogs(client, sample_count=samples)
         print(f"  共 {len(dialogs)} 个对话")
         if verbose:
             for dialog in dialogs:
-                print(f"    [{dialog.dialog_type}] {dialog.title} (id={dialog.id})")
-                print(f"      用户名: {dialog.username}，简介: {dialog.description}")
-                print(f"      成员数: {dialog.participants_count}，样本: {dialog.sample_messages}")
+                print(f"    [{dialog.dialog_type}] {display_text(dialog.title)} (id={dialog.id})")
+                print(
+                    f"      用户名: {display_text(dialog.username)}，"
+                    f"简介: {display_text(dialog.description)}"
+                )
+                print(
+                    f"      成员数: {dialog.participants_count}，"
+                    f"样本: {display_text(dialog.sample_messages)}"
+                )
                 print(
                     f"      标记: scam={dialog.scam} fake={dialog.fake} restricted={dialog.restricted}"
                 )
@@ -112,15 +121,15 @@ async def _run(
         print(":: 执行计划：")
         print(f"  删除 {len(groups.to_delete)} 个已注销、scam 或 fake 对话")
         for dialog in groups.to_delete:
-            print(f"    删除: {dialog.title} (id={dialog.id})")
+            print(f"    删除: {display_text(dialog.title)} (id={dialog.id})")
         print(f"  置顶 {len(groups.official)} 个 Telegram 官方对话")
         if folders:
             print(f"  重建 {len(folders)} 个分组（会先删除已有自定义分组）")
             dialog_map = {dialog.id: dialog for dialog in groups.folder_dialogs}
             for folder in folders:
-                print(f"    {folder['name']} ({len(folder['dialog_ids'])} 个对话)")
+                print(f"    {display_text(folder['name'])} ({len(folder['dialog_ids'])} 个对话)")
                 for dialog_id in folder["dialog_ids"]:
-                    print(f"      {dialog_map[dialog_id].title} (id={dialog_id})")
+                    print(f"      {display_text(dialog_map[dialog_id].title)} (id={dialog_id})")
         else:
             print("  没有待创建的分组，保留已有分组")
 
@@ -143,7 +152,7 @@ async def _run(
                 )
                 print(f"  已置顶: Telegram (id={dialog.id})")
             except Exception as exc:
-                print(f"  置顶 Telegram 失败: {exc}")
+                print(f"  置顶 Telegram 失败: {display_text(exc)}")
         if folders:
             await apply_folders(client, folders, groups.folder_dialogs)
         print("  完成！")
@@ -152,6 +161,7 @@ async def _run(
 
 
 async def _clean(config: str, code: str | None, yes: bool, dry_run: bool) -> None:
+    """预览或确认删除已注销对话，在成功、取消和异常路径都释放连接。"""
     Config.load(config)
     client = await create_client(code=code)
     try:
@@ -162,7 +172,7 @@ async def _clean(config: str, code: str | None, yes: bool, dry_run: bool) -> Non
             return
         print(f"找到 {len(deleted)} 个已注销账号的对话:")
         for dialog in deleted:
-            print(f"  - {dialog.title} (id={dialog.id})")
+            print(f"  - {display_text(dialog.title)} (id={dialog.id})")
         if dry_run:
             print(":: 预览模式，不执行删除。")
             return
