@@ -9,7 +9,14 @@ import typer
 from telethon import functions
 
 from telefold.classifier import classify
-from telefold.client import apply_folders, create_client, delete_dialogs, fetch_dialogs
+from telefold.client import (
+    apply_folders,
+    create_client,
+    delete_dialogs,
+    fetch_dialogs,
+    prepare_dialog_peers,
+    prepare_folder_plan,
+)
 from telefold.config import Config
 from telefold.display import display_text
 from telefold.planner import build_folders, group_dialogs
@@ -111,20 +118,33 @@ async def _run(
             print(f"  类型过滤后剩余 {len(dialogs)} 个对话")
 
         groups = group_dialogs(dialogs)
+        action_peers = prepare_dialog_peers(groups.to_delete + groups.official)
+        pins = tuple(
+            functions.messages.ToggleDialogPinRequest(peer=action_peers[d.id], pinned=True)
+            for d in groups.official
+        )
+        for request in pins:
+            bytes(request)
         if groups.regular:
             print(":: LLM 分类中...")
             classified = await classify(cfg.llm, groups.regular)
         else:
             classified = []
         folders = build_folders(groups, classified)
+        folder_plan = (
+            await prepare_folder_plan(client, folders, groups.folder_dialogs) if folders else None
+        )
 
-        print(":: 执行计划：")
+        print(":: 执行计划（先整理分组和置顶，最后删除对话）：")
         print(f"  删除 {len(groups.to_delete)} 个已注销、scam 或 fake 对话")
         for dialog in groups.to_delete:
             print(f"    删除: {display_text(dialog.title)} (id={dialog.id})")
         print(f"  置顶 {len(groups.official)} 个 Telegram 官方对话")
         if folders:
-            print(f"  重建 {len(folders)} 个分组（会先删除已有自定义分组）")
+            print(f"  重建 {len(folders)} 个普通分组（先写入，成功后再移除多余分组）")
+            print(f"  保留 {folder_plan.shared_count} 个共享分组")
+            for request, name in zip(folder_plan.removals, folder_plan.removed_names, strict=True):
+                print(f"    移除旧分组: {display_text(name)} (id={request.id})")
             dialog_map = {dialog.id: dialog for dialog in groups.folder_dialogs}
             for folder in folders:
                 print(f"    {display_text(folder['name'])} ({len(folder['dialog_ids'])} 个对话)")
@@ -143,18 +163,14 @@ async def _run(
             print("  已取消全部操作。")
             return
 
+        if folder_plan is not None:
+            await apply_folders(client, folder_plan)
+        for dialog, request in zip(groups.official, pins, strict=True):
+            if await client(request) is not True:
+                raise RuntimeError("Telegram 拒绝置顶官方对话，已停止执行。")
+            print(f"  已置顶: Telegram (id={dialog.id})")
         if groups.to_delete:
             await delete_dialogs(client, groups.to_delete)
-        for dialog in groups.official:
-            try:
-                await client(
-                    functions.messages.ToggleDialogPinRequest(peer=dialog._peer, pinned=True)
-                )
-                print(f"  已置顶: Telegram (id={dialog.id})")
-            except Exception as exc:
-                print(f"  置顶 Telegram 失败: {display_text(exc)}")
-        if folders:
-            await apply_folders(client, folders, groups.folder_dialogs)
         print("  完成！")
     finally:
         await client.disconnect()
@@ -170,6 +186,7 @@ async def _clean(config: str, code: str | None, yes: bool, dry_run: bool) -> Non
         if not deleted:
             print("未找到已注销账号的对话。")
             return
+        prepare_dialog_peers(deleted)
         print(f"找到 {len(deleted)} 个已注销账号的对话:")
         for dialog in deleted:
             print(f"  - {display_text(dialog.title)} (id={dialog.id})")

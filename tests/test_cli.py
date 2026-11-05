@@ -5,9 +5,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from telethon import functions, types
 from typer.testing import CliRunner
 
 from telefold import cli
+from telefold import client as client_module
 from telefold.client import DialogInfo
 from telefold.config import Config, LLMConfig
 
@@ -19,27 +21,55 @@ def environment(monkeypatch):
     monkeypatch.setattr(cli.Config, "load", Mock(return_value=cfg))
     client = AsyncMock()
     client.get_me.return_value = SimpleNamespace(first_name="测试用户", phone="测试号码")
+    client.return_value = True
     create = AsyncMock(return_value=client)
     fetch = AsyncMock(
         return_value=[
-            DialogInfo(1, "待删除", "deleted", _peer="deleted-peer"),
-            DialogInfo(777000, "Telegram", "user", _peer="official-peer"),
-            DialogInfo(2, "技术群", "group", _peer="group-peer"),
+            DialogInfo(1, "待删除", "deleted", _peer=types.InputPeerUser(1, 1)),
+            DialogInfo(777000, "Telegram", "user", _peer=types.InputPeerUser(777000, 777)),
+            DialogInfo(2, "技术群", "group", _peer=types.InputPeerChat(2)),
         ]
     )
     classify = AsyncMock(return_value=[{"name": "技术", "dialog_ids": [2]}])
     delete = AsyncMock()
     apply = AsyncMock()
+    plan = client_module.FolderPlan(
+        snapshot=(),
+        updates=(
+            functions.messages.UpdateDialogFilterRequest(
+                id=2,
+                filter=types.DialogFilter(
+                    id=2,
+                    title=types.TextWithEntities(text="技术", entities=[]),
+                    pinned_peers=[],
+                    include_peers=[types.InputPeerChat(2)],
+                    exclude_peers=[],
+                ),
+            ),
+        ),
+        removals=(),
+        removed_names=(),
+        shared_count=0,
+    )
+    prepare = AsyncMock(return_value=plan)
     for name, value in {
         "create_client": create,
         "fetch_dialogs": fetch,
         "classify": classify,
         "delete_dialogs": delete,
         "apply_folders": apply,
+        "prepare_folder_plan": prepare,
     }.items():
         monkeypatch.setattr(cli, name, value)
     return SimpleNamespace(
-        client=client, create=create, fetch=fetch, classify=classify, delete=delete, apply=apply
+        client=client,
+        create=create,
+        fetch=fetch,
+        classify=classify,
+        delete=delete,
+        apply=apply,
+        prepare=prepare,
+        plan=plan,
     )
 
 
@@ -88,24 +118,25 @@ def test_confirmed_run_applies_the_displayed_plan(environment, yes):
     async def pinned(request):
         """只允许置顶计划中指定的官方 peer。"""
         events.append("置顶")
-        assert request.peer == "official-peer" and request.pinned is True
+        assert request.peer.user_id == 777000 and request.pinned is True
+        return True
 
-    async def applied(client, folders, dialogs):
+    async def applied(client, plan):
         """只允许将计划中的普通对话写入已展示的分组。"""
         events.append("分组")
-        assert folders == [{"name": "技术", "dialog_ids": [2]}]
-        assert [d.id for d in dialogs] == [2]
+        assert client is env.client
+        assert plan is env.plan
 
     env.delete.side_effect = deleted
     env.client.side_effect = pinned
     env.apply.side_effect = applied
     result = CliRunner().invoke(cli.app, ["run"] + (["-y"] if yes else []), input=" y \n")
     assert result.exit_code == 0, result.output
-    assert events == ["删除", "置顶", "分组"]
+    assert events == ["分组", "置顶", "删除"]
     env.client.disconnect.assert_awaited_once()
 
 
-@pytest.mark.parametrize("stage", ["get_me", "fetch", "classify", "delete", "apply"])
+@pytest.mark.parametrize("stage", ["get_me", "fetch", "classify", "prepare", "apply", "delete"])
 def test_failure_always_disconnects(environment, stage):
     """读取或分类失败不得写入，任何执行阶段失败也必须断开连接。"""
     env = environment
@@ -115,8 +146,11 @@ def test_failure_always_disconnects(environment, stage):
     assert result.exit_code != 0
     assert isinstance(result.exception, RuntimeError)
     env.client.disconnect.assert_awaited_once()
-    if stage in {"get_me", "fetch", "classify"}:
+    if stage in {"get_me", "fetch", "classify", "prepare"}:
         assert_no_writes(env)
+    elif stage == "apply":
+        env.client.assert_not_awaited()
+        env.delete.assert_not_awaited()
 
 
 def test_invalid_classification_prevents_all_writes(environment):
@@ -141,7 +175,7 @@ def test_no_dialogs_does_not_clear_existing_folders(environment):
 
 def test_cleanup_only_does_not_clear_existing_folders(environment):
     env = environment
-    env.fetch.return_value = [DialogInfo(1, "待删除", "deleted")]
+    env.fetch.return_value = [DialogInfo(1, "待删除", "deleted", _peer=types.InputPeerUser(1, 1))]
     result = CliRunner().invoke(cli.app, ["run", "--yes"])
     assert result.exit_code == 0, result.output
     env.delete.assert_awaited_once()
@@ -237,7 +271,8 @@ def test_group_count_violation_cancels_all_writes(environment):
     """即使对话覆盖完整，九个普通对话只有一个分组也不得进入任何写入。"""
     env = environment
     env.fetch.return_value = env.fetch.return_value[:2] + [
-        DialogInfo(index, "技术群", "group", _peer=f"peer-{index}") for index in range(2, 11)
+        DialogInfo(index, "技术群", "group", _peer=types.InputPeerChat(index))
+        for index in range(2, 11)
     ]
     env.classify.return_value = [{"name": "技术", "dialog_ids": list(range(2, 11))}]
     result = CliRunner().invoke(cli.app, ["run", "--yes"])
@@ -245,4 +280,93 @@ def test_group_count_violation_cancels_all_writes(environment):
     assert isinstance(result.exception, ValueError)
     assert "5-8" in str(result.exception)
     assert_no_writes(env)
+    env.client.disconnect.assert_awaited_once()
+
+
+def test_invalid_folder_peer_is_detected_before_any_write(environment, monkeypatch):
+    """使用真实预检函数，验证缺少分组 peer 时连删除和置顶也不能先执行。"""
+    env = environment
+    env.fetch.return_value[2]._peer = None
+    monkeypatch.setattr(cli, "prepare_folder_plan", client_module.prepare_folder_plan)
+    result = CliRunner().invoke(cli.app, ["run", "--yes"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, ValueError)
+    assert_no_writes(env)
+    env.client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.parametrize("command", ["run", "clean"])
+def test_real_delete_failure_cannot_report_success(environment, monkeypatch, command):
+    """实际删除 helper 的错误必须影响 CLI 退出状态，不能打印完成后静默成功。"""
+    env = environment
+    env.client.delete_dialog.side_effect = RuntimeError("实际删除被拒绝")
+    monkeypatch.setattr(cli, "delete_dialogs", client_module.delete_dialogs)
+    result = CliRunner().invoke(cli.app, [command, "--yes"])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, RuntimeError)
+    assert "完成！" not in result.output
+    env.client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.parametrize("failure", [False, RuntimeError("置顶失败")])
+def test_pin_failure_stops_before_irreversible_cleanup(environment, failure):
+    """置顶返回 False 不是成功，必须停止后续对话删除并非零退出。"""
+    env = environment
+    if isinstance(failure, Exception):
+        env.client.side_effect = failure
+    else:
+        env.client.return_value = failure
+    result = CliRunner().invoke(cli.app, ["run", "--yes"])
+    assert result.exit_code != 0
+    env.apply.assert_awaited_once()
+    env.delete.assert_not_awaited()
+    assert "完成！" not in result.output
+    env.client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.parametrize("mode", ["confirm", "dry-run", "decline"])
+def test_real_preflight_and_apply_complete_before_deleting_dialogs(environment, monkeypatch, mode):
+    """串联真实 helper，验证确认后的执行顺序以及预览、取消时只有只读请求。"""
+    env = environment
+    old = types.DialogFilter(
+        id=2,
+        title=types.TextWithEntities(text="旧分组", entities=[]),
+        pinned_peers=[],
+        include_peers=[],
+        exclude_peers=[],
+    )
+    filters = {2: old}
+    events = []
+
+    async def rpc(request):
+        """记录实际 RPC，只有更新成功后才更改模拟服务器中的分组。"""
+        if isinstance(request, functions.messages.GetDialogFiltersRequest):
+            return SimpleNamespace(filters=list(filters.values()))
+        if isinstance(request, functions.messages.UpdateDialogFilterRequest):
+            assert request.filter is not None
+            events.append("分组")
+            filters[request.id] = request.filter
+        else:
+            assert isinstance(request, functions.messages.ToggleDialogPinRequest)
+            events.append("置顶")
+        return True
+
+    async def deleted(peer):
+        """不可逆删除必须位于分组和置顶操作之后。"""
+        assert peer.user_id == 1
+        events.append("删除")
+
+    env.client.side_effect = rpc
+    env.client.delete_dialog.side_effect = deleted
+    monkeypatch.setattr(cli, "prepare_folder_plan", client_module.prepare_folder_plan)
+    monkeypatch.setattr(cli, "apply_folders", client_module.apply_folders)
+    monkeypatch.setattr(cli, "delete_dialogs", client_module.delete_dialogs)
+    monkeypatch.setattr(client_module.asyncio, "sleep", AsyncMock())
+    args = ["run"] + ([] if mode == "decline" else ["--yes"])
+    if mode == "dry-run":
+        args.append("--dry-run")
+    result = CliRunner().invoke(cli.app, args, input="n\n")
+    assert result.exit_code == 0, result.output
+    assert events == (["分组", "置顶", "删除"] if mode == "confirm" else [])
+    assert filters[2].title.text == ("技术" if mode == "confirm" else "旧分组")
     env.client.disconnect.assert_awaited_once()
